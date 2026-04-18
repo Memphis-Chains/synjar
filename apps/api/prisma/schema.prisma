@@ -203,8 +203,13 @@ model Chunk {
   id         String @id @default(uuid())
   documentId String
 
-  content   String                      @db.Text
-  embedding Unsupported("vector(1536)")
+  content   String                     @db.Text
+  // Embedding dimension selection (must match provider + OLLAMA_EMBEDDING_DIMENSIONS):
+  //   768  — Ollama nomic-embed-text (default for sovereign/local deployments)
+  //   1024 — Ollama mxbai-embed-large, bge-m3
+  //   1536 — OpenAI text-embedding-3-small (original upstream default)
+  // Changing this requires a migration + re-embedding all chunks.
+  embedding Unsupported("vector(768)")
 
   chunkIndex  Int
   startOffset Int?
