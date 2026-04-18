@@ -89,28 +89,39 @@ export class OllamaEmbeddingsService implements IEmbeddingsService {
       );
     }
 
-    // Ollama's /api/embeddings endpoint is single-input. Issue
-    // parallel requests for batch efficiency; Ollama's internal
-    // scheduler handles concurrency against the loaded model.
-    const results = await Promise.all(
-      texts.map(async (text) => {
-        const embedding = await this.fetchEmbedding(text);
-        this.assertDimension(embedding);
-        return {
-          embedding,
-          tokenCount: this.approximateTokenCount(text),
-        };
-      }),
-    );
+    // Ollama's /api/embed endpoint (v0.5.0+) accepts an array, processes
+    // server-side in a single round trip. Much faster than parallel
+    // /api/embeddings calls (which serialize anyway at the model layer).
+    const embeddings = await this.fetchBatchEmbeddings(texts);
 
-    return results;
+    if (embeddings.length !== texts.length) {
+      throw new Error(
+        `Ollama returned ${embeddings.length} embeddings for ${texts.length} inputs — mismatch`,
+      );
+    }
+
+    return embeddings.map((embedding, i) => {
+      this.assertDimension(embedding);
+      return {
+        embedding,
+        tokenCount: this.approximateTokenCount(texts[i]),
+      };
+    });
   }
 
   private async fetchEmbedding(text: string): Promise<number[]> {
-    const url = `${this.baseUrl}/api/embeddings`;
+    // Uses the newer /api/embed endpoint (v0.5.0+) even for single
+    // inputs — it returns the same shape as batch and is more
+    // performant than the legacy /api/embeddings single-prompt route.
+    const [embedding] = await this.fetchBatchEmbeddings([text]);
+    return embedding;
+  }
+
+  private async fetchBatchEmbeddings(texts: string[]): Promise<number[][]> {
+    const url = `${this.baseUrl}/api/embed`;
     const body = JSON.stringify({
       model: this.model,
-      prompt: text,
+      input: texts,
     });
 
     const response = await fetch(url, {
@@ -122,18 +133,18 @@ export class OllamaEmbeddingsService implements IEmbeddingsService {
     if (!response.ok) {
       const errorText = await response.text().catch(() => '(no body)');
       throw new Error(
-        `Ollama embeddings request failed: HTTP ${response.status} ${response.statusText} — ${errorText.slice(0, 200)}`,
+        `Ollama /api/embed failed: HTTP ${response.status} ${response.statusText} — ${errorText.slice(0, 200)}`,
       );
     }
 
-    const data = (await response.json()) as { embedding?: number[] };
-    if (!data.embedding || !Array.isArray(data.embedding)) {
+    const data = (await response.json()) as { embeddings?: number[][] };
+    if (!data.embeddings || !Array.isArray(data.embeddings)) {
       throw new Error(
-        `Ollama embeddings response missing 'embedding' array: ${JSON.stringify(data).slice(0, 200)}`,
+        `Ollama /api/embed response missing 'embeddings' array: ${JSON.stringify(data).slice(0, 200)}`,
       );
     }
 
-    return data.embedding;
+    return data.embeddings;
   }
 
   private assertDimension(embedding: number[]): void {
